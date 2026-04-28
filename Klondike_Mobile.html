@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Klondike Mobile - Estável</title>
+    <style>
+        * { 
+            user-select: none; 
+            -webkit-tap-highlight-color: transparent; 
+            touch-action: none; /* Previne gestos padrão do navegador que conflitam com o jogo */
+        }
+        
+        body {
+            background: #15291c;
+            min-height: 100vh;
+            margin: 0; padding: 0;
+            font-family: 'Segoe UI', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #game-wrapper {
+            position: relative;
+            width: 100%;
+            max-width: 800px;
+            padding: 10px 0;
+        }
+
+        canvas { 
+            width: 100%;
+            height: auto;
+            background: #18291c;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            display: block;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-wrapper">
+        <canvas id="solitaireCanvas"></canvas>
+    </div>
+
+<script>
+    (function(){
+        const canvas = document.getElementById('solitaireCanvas');
+        const ctx = canvas.getContext('2d');
+        let audioCtx = null;
+
+        const CW = 800;
+        const CH = 1200;
+        canvas.width = CW;
+        canvas.height = CH;
+
+        const CARD_W = 100;
+        const CARD_H = 145;
+        const GAP_X = 12; 
+        
+        const TOP_Y = 60;
+        const TABLEAU_Y = 230;      
+        const UNDO_X = GAP_X + (CARD_W * 2) + (GAP_X * 2);
+        const UNDO_W = 80;
+        const UNDO_H = CARD_H;
+
+        let stock = [], waste = [], foundations = [[],[],[],[]], tableau = [[],[],[],[],[],[],[]];
+        let history = [], score = 0, isDragging = false, draggedCards = [], draggedSource = null;
+        let dragOff = {x: 0, y: 0}, lastMouse = {x: 0, y: 0};
+
+        class Card {
+            constructor(suit, rank, faceUp = false) {
+                this.suit = suit; this.rank = rank; this.faceUp = faceUp;
+            }
+            clone() { return new Card(this.suit, this.rank, this.faceUp); }
+            get color() { return (this.suit === "hearts" || this.suit === "diamonds") ? "#970202" : "#000000"; }
+            get symbol() { return {hearts:"♥", diamonds:"♦", clubs:"♣", spades:"♠"}[this.suit]; }
+            get label() { 
+                const labels = {1:"A", 11:"J", 12:"Q", 13:"K"};
+                return labels[this.rank] || this.rank;
+            }
+        }
+
+        function playClickSound() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(450, audioCtx.currentTime);
+            gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+        }
+
+        function saveState() {
+            const state = {
+                stock: stock.map(c => c.clone()),
+                waste: waste.map(c => c.clone()),
+                foundations: foundations.map(f => f.map(c => c.clone())),
+                tableau: tableau.map(t => t.map(c => c.clone())),
+                score: score
+            };
+            history.push(JSON.stringify(state));
+            if(history.length > 40) history.shift();
+        }
+
+        function undo() {
+            if(!history.length) return;
+            playClickSound();
+            const state = JSON.parse(history.pop());
+            stock = state.stock.map(c => Object.assign(new Card(), c));
+            waste = state.waste.map(c => Object.assign(new Card(), c));
+            foundations = state.foundations.map(f => f.map(c => Object.assign(new Card(), c)));
+            tableau = state.tableau.map(t => t.map(c => Object.assign(new Card(), c)));
+            score = state.score; draw();
+        }
+
+        function initGame() {
+            const suits = ["hearts", "diamonds", "clubs", "spades"];
+            let deck = [];
+            suits.forEach(s => { for(let r=1; r<=13; r++) deck.push(new Card(s, r)); });
+            deck.sort(() => Math.random() - 0.5);
+            foundations = [[],[],[],[]]; waste = []; score = 0; history = [];
+            for(let i=0; i<7; i++) {
+                tableau[i] = [];
+                for(let j=0; j<=i; j++) {
+                    let c = deck.pop(); c.faceUp = (i === j);
+                    tableau[i].push(c);
+                }
+            }
+            stock = deck; draw();
+        }
+
+        function drawCard(c, x, y, ghost = false) {
+            ctx.save();
+            if(ghost) { ctx.shadowBlur = 15; ctx.globalAlpha = 0.8; }
+            ctx.fillStyle = c.faceUp ? "#ffffff" : "#291522";
+            ctx.strokeStyle = "#000";
+            ctx.lineWidth = 2;
+            ctx.beginPath(); 
+            ctx.roundRect(x, y, CARD_W, CARD_H, 10); 
+            ctx.fill(); ctx.stroke();
+            
+            if(c.faceUp) {
+                ctx.fillStyle = c.color;
+                ctx.font = "bold 22px Arial";
+                ctx.textAlign = "left";
+                ctx.fillText(c.label, x + 8, y + 28);
+                const labelWidth = ctx.measureText(c.label).width;
+                ctx.font = "18px Arial";
+                ctx.fillText(c.symbol, x + 12 + labelWidth, y + 27);
+                ctx.font = "45px Arial"; 
+                ctx.textAlign = "center";
+                ctx.fillText(c.symbol, x + CARD_W/2, y + CARD_H/2 + 15);
+            } else {
+                ctx.strokeStyle = "rgba(255,255,255,0.1)"; 
+                ctx.strokeRect(x+10, y+10, CARD_W-20, CARD_H-20);
+            }
+            ctx.restore();
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, CW, CH);
+            ctx.fillStyle = "#f0e6c5";
+            ctx.font = "bold 24px Arial";
+            ctx.textAlign = "left";
+            ctx.fillText("PONTOS: " + score, GAP_X, TOP_Y - 20);
+
+            const STOCK_X = GAP_X;
+            const WASTE_X = STOCK_X + CARD_W + GAP_X;
+            if(stock.length) drawCard({faceUp:false}, STOCK_X, TOP_Y);
+            else {
+                ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.strokeRect(STOCK_X, TOP_Y, CARD_W, CARD_H);
+                ctx.fillStyle = "#b6baaa"; ctx.font = "30px Arial"; ctx.textAlign = "center";
+                ctx.fillText("↺", STOCK_X+CARD_W/2, TOP_Y+85);
+            }
+            if(waste.length) drawCard(waste[waste.length-1], WASTE_X, TOP_Y);
+
+            ctx.save();
+            ctx.fillStyle = "rgba(255,255,255,0.05)";
+            ctx.strokeStyle = "#c9a845";
+            ctx.beginPath(); ctx.roundRect(UNDO_X, TOP_Y, UNDO_W, UNDO_H, 10); ctx.fill(); ctx.stroke();
+            ctx.fillStyle = "#f0e6c5"; ctx.font = "bold 35px Arial"; ctx.textAlign = "center";
+            ctx.fillText("↩", UNDO_X + UNDO_W/2, TOP_Y + UNDO_H/2 + 12);
+            ctx.restore();
+
+            for(let i=0; i<4; i++) {
+                const fx = CW - (4-i)*(CARD_W + GAP_X);
+                ctx.strokeStyle = "rgba(255,255,255,0.1)";
+                ctx.beginPath(); ctx.roundRect(fx, TOP_Y, CARD_W, CARD_H, 10); ctx.stroke();
+                if(foundations[i].length) drawCard(foundations[i][foundations[i].length-1], fx, TOP_Y);
+            }
+
+            tableau.forEach((col, i) => {
+                const x = GAP_X + i*(CARD_W + GAP_X/2);
+                col.forEach((c, j) => {
+                    if(!isDragging || !draggedCards.includes(c))
+                        drawCard(c, x, TABLEAU_Y + j*35);
+                });
+            });
+
+            if(isDragging) {
+                draggedCards.forEach((c, i) => {
+                    drawCard(c, lastMouse.x - dragOff.x, lastMouse.y - dragOff.y + i*35, true);
+                });
+            }
+        }
+
+        function getInputPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = (e.touches && e.touches.length > 0) ? e.touches[0].clientX : e.clientX;
+            const clientY = (e.touches && e.touches.length > 0) ? e.touches[0].clientY : e.clientY;
+            return { 
+                x: (clientX - rect.left) * (CW / rect.width), 
+                y: (clientY - rect.top) * (CH / rect.height) 
+            };
+        }
+
+        function handleStart(e) {
+            const pos = getInputPos(e); lastMouse = pos;
+
+            // 1. Botão UNDO
+            if(pos.x > UNDO_X && pos.x < UNDO_X+UNDO_W && pos.y > TOP_Y && pos.y < TOP_Y+UNDO_H) {
+                undo(); return;
+            }
+
+            // 2. Clique no DECK (Ajustado para ser único)
+            if(pos.x > GAP_X && pos.x < GAP_X+CARD_W && pos.y > TOP_Y && pos.y < TOP_Y+CARD_H) {
+                saveState(); playClickSound();
+                if(!stock.length) { 
+                    stock = waste.reverse().map(c=>{c.faceUp=false; return c;}); 
+                    waste = []; 
+                } else { 
+                    let c = stock.pop(); 
+                    c.faceUp = true; 
+                    waste.push(c); 
+                }
+                draw();
+                return;
+            }
+
+            // 3. Clique no Tableau
+            for (let i = tableau.length - 1; i >= 0; i--) {
+                const col = tableau[i];
+                const x = GAP_X + i * (CARD_W + GAP_X / 2);
+                for (let j = col.length - 1; j >= 0; j--) {
+                    const c = col[j];
+                    if (c.faceUp && pos.x > x && pos.x < x + CARD_W && pos.y > TABLEAU_Y + j * 35 && pos.y < TABLEAU_Y + j * 35 + CARD_H) {
+                        saveState(); 
+                        draggedCards = col.splice(j); 
+                        draggedSource = { type: 'tableau', index: i };
+                        isDragging = true; 
+                        dragOff = { x: pos.x - x, y: pos.y - (TABLEAU_Y + j * 35) };
+                        return;
+                    }
+                }
+            }
+
+            // 4. Clique no Waste
+            const WASTE_X = GAP_X + CARD_W + GAP_X;
+            if(waste.length && pos.x > WASTE_X && pos.x < WASTE_X+CARD_W && pos.y > TOP_Y && pos.y < TOP_Y+CARD_H) {
+                saveState(); draggedCards = [waste.pop()]; draggedSource = { type: 'waste' };
+                isDragging = true; dragOff = { x: pos.x - WASTE_X, y: pos.y - TOP_Y };
+            }
+        }
+
+        function handleMove(e) { if(!isDragging) return; lastMouse = getInputPos(e); draw(); }
+
+        function handleEnd() {
+            if(!isDragging) return;
+            let placed = false; const pos = lastMouse;
+
+            tableau.forEach((col, i) => {
+                const tx = GAP_X + i*(CARD_W+GAP_X/2);
+                if(pos.x > tx - 20 && pos.x < tx + CARD_W + 20 && pos.y > TABLEAU_Y - 50) {
+                    const target = col[col.length-1];
+                    const card = draggedCards[0];
+                    if((!target && card.rank === 13) || (target && target.color !== card.color && target.rank === card.rank + 1)) {
+                        tableau[i] = col.concat(draggedCards); placed = true;
+                    }
+                }
+            });
+
+            if(!placed && draggedCards.length === 1) {
+                for(let i=0; i<4; i++) {
+                    const fx = CW - (4-i)*(CARD_W + GAP_X);
+                    if(pos.x > fx - 20 && pos.x < fx + CARD_W + 20 && pos.y < TABLEAU_Y + CARD_H) {
+                        const target = foundations[i][foundations[i].length-1];
+                        const card = draggedCards[0];
+                        if((!target && card.rank === 1) || (target && target.suit === card.suit && card.rank === target.rank + 1)) {
+                            foundations[i].push(card); placed = true; score += 10;
+                        }
+                    }
+                }
+            }
+
+            if(!placed) {
+                if(draggedSource.type === 'tableau') tableau[draggedSource.index] = tableau[draggedSource.index].concat(draggedCards);
+                else waste.push(draggedCards[0]);
+                history.pop();
+            } else {
+                playClickSound();
+                if(draggedSource.type === 'tableau' && tableau[draggedSource.index].length) {
+                    let last = tableau[draggedSource.index][tableau[draggedSource.index].length-1];
+                    if(!last.faceUp) { last.faceUp = true; score += 5; }
+                }
+            }
+            isDragging = false; draw();
+        }
+
+        // --- GESTÃO DE EVENTOS PARA EVITAR CLIQUE DUPLO ---
+        
+        canvas.addEventListener('mousedown', (e) => {
+            handleStart(e);
+        });
+
+        window.addEventListener('mousemove', handleMove);
+        window.addEventListener('mouseup', handleEnd);
+
+        canvas.addEventListener('touchstart', (e) => {
+            // Previne o disparo do mousedown após o toque
+            if(e.cancelable) e.preventDefault(); 
+            handleStart(e);
+        }, {passive: false});
+
+        window.addEventListener('touchmove', (e) => {
+            if(isDragging) e.preventDefault(); // Impede scroll durante o arraste
+            handleMove(e);
+        }, {passive: false});
+
+        window.addEventListener('touchend', (e) => {
+            handleEnd();
+        }, {passive: true});
+
+        initGame();
+    })();
+</script>
+</body>
+</html>

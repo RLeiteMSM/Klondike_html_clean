@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Klondike Solitaire - Som Corrigido</title>
+    <style>
+        * { user-select: none; -webkit-tap-highlight-color: transparent; }
+        body {
+            background: linear-gradient(135deg, #1a3a1a 0%, #0a1f0a 100%);
+            min-height: 100vh;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            font-family: 'Segoe UI', sans-serif; margin: 0; padding: 10px;
+        }
+        
+        /* Novo estilo para o contador no topo */
+        .score-header {
+            background: rgba(30, 25, 20, 0.85);
+            padding: 10px 40px;
+            border-radius: 40px;
+            color: #f0e6c5;
+            border: 1px solid rgba(212, 184, 122, 0.2);
+            margin-bottom: 20px;
+            font-size: 1.4rem;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+
+        .game-container {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 20px; padding: 10px;
+            box-shadow: 0 25px 40px rgba(0,0,0,0.5);
+            position: relative;
+        }
+        canvas { display: block; margin: 0 auto; border-radius: 10px; cursor: pointer; }
+        
+        #undoBtn {
+            position: absolute;
+            top: 65px;
+            left: 285px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(212, 184, 122, 0.4);
+            color: #f0e6c5;
+            padding: 12px;
+            border-radius: 50%;
+            cursor: pointer;
+            font-size: 20px;
+            transition: all 0.2s;
+            z-index: 10;
+        }
+        #undoBtn:hover { background: rgba(212, 184, 122, 0.2); transform: scale(1.1); }
+    </style>
+</head>
+<body>
+    <div class="score-header" id="scoreDisplay">Pontos: 0</div>
+
+    <div class="game-container">
+        <button id="undoBtn" title="Desfazer">↩</button>
+        <canvas id="solitaireCanvas" width="940" height="1400"></canvas>
+    </div>
+
+<script>
+    (function(){
+        const canvas = document.getElementById('solitaireCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        let audioCtx = null;
+        const CARD_W = 114; const CARD_H = 155;
+        const STACK_X_OFFSET = 18; const TOP_Y = 30; const TABLEAU_Y = 220;
+        const marginX = 10; 
+        
+        const TABLEAU_X = [];
+        for(let i = 0; i < 7; i++) TABLEAU_X[i] = marginX + i * (CARD_W + STACK_X_OFFSET);
+        const STOCK_X = marginX;
+        const WASTE_X = marginX + CARD_W + 20;
+        const FOUNDATION_X = [];
+        const fGap = 15;
+        for(let i = 0; i < 4; i++) {
+            FOUNDATION_X[i] = (TABLEAU_X[6] + CARD_W) - (4 * CARD_W + 3 * fGap) + i * (CARD_W + fGap);
+        }
+
+        let stock = [], waste = [], foundations = [[],[],[],[]], tableau = [[],[],[],[],[],[],[]];
+        let history = []; 
+        let score = 0, isDragging = false, draggedCards = [], draggedSource = null;
+        let dragOff = {x: 0, y: 0}, mouse = {x: 0, y: 0};
+
+        class Card {
+            constructor(suit, rank, faceUp = false) {
+                this.suit = suit; this.rank = rank; this.faceUp = faceUp;
+            }
+            clone() { return new Card(this.suit, this.rank, this.faceUp); }
+            get color() { return (this.suit === "hearts" || this.suit === "diamonds") ? "#970202" : "#111"; }
+            get symbol() { return {hearts:"♥", diamonds:"♦", clubs:"♣", spades:"♠"}[this.suit]; }
+            get label() { 
+                if(this.rank === 1) return "A";
+                if(this.rank === 11) return "J";
+                if(this.rank === 12) return "Q";
+                if(this.rank === 13) return "K";
+                return this.rank;
+            }
+        }
+
+        function playClickSound() {
+            if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'triangle'; 
+            osc.frequency.setValueAtTime(500, audioCtx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(50, audioCtx.currentTime + 0.08);
+            gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.08);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.08);
+        }
+
+        function updateScore(points) {
+            score += points;
+            if (score < 0) score = 0; 
+            document.getElementById('scoreDisplay').innerText = `Pontos: ${score}`;
+        }
+
+        function saveState() {
+            const state = {
+                stock: stock.map(c => c.clone()),
+                waste: waste.map(c => c.clone()),
+                foundations: foundations.map(f => f.map(c => c.clone())),
+                tableau: tableau.map(t => t.map(c => c.clone())),
+                score: score
+            };
+            history.push(JSON.stringify(state));
+            if(history.length > 50) history.shift();
+        }
+
+        function undo() {
+            if(history.length === 0) return;
+            playClickSound();
+            const state = JSON.parse(history.pop());
+            stock = state.stock.map(c => Object.assign(new Card(), c));
+            waste = state.waste.map(c => Object.assign(new Card(), c));
+            foundations = state.foundations.map(f => f.map(c => Object.assign(new Card(), c)));
+            tableau = state.tableau.map(t => t.map(c => Object.assign(new Card(), c)));
+            score = state.score;
+            document.getElementById('scoreDisplay').innerText = `Pontos: ${score}`;
+            draw();
+        }
+
+        function initGame() {
+            const suits = ["hearts", "diamonds", "clubs", "spades"];
+            let deck = [];
+            suits.forEach(s => { for(let r=1; r<=13; r++) deck.push(new Card(s, r)); });
+            deck = deck.sort(() => Math.random() - 0.5);
+            foundations = [[],[],[],[]]; waste = []; stock = []; history = [];
+            score = 0;
+            updateScore(0);
+            for(let i=0; i<7; i++) {
+                tableau[i] = [];
+                for(let j=0; j<=i; j++) {
+                    let c = deck.pop(); c.faceUp = (i === j); tableau[i].push(c);
+                }
+            }
+            stock = deck; draw();
+        }
+
+        function drawCard(c, x, y, ghost = false) {
+            ctx.save();
+            if(ghost) { ctx.shadowBlur = 15; ctx.shadowColor = "rgba(0,0,0,0.5)"; ctx.globalAlpha = 0.9; }
+            ctx.fillStyle = c.faceUp ? "#b6baaa" : "#291522";
+            ctx.strokeStyle = "#000";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.roundRect(x, y, CARD_W, CARD_H, 10); ctx.fill(); ctx.stroke();
+            if(c.faceUp) {
+                ctx.fillStyle = c.color;
+                ctx.font = "bold 24px Arial";
+                const labelWidth = ctx.measureText(c.label).width;
+                ctx.fillText(c.label, x + 8, y + 28);
+                ctx.font = "20px Arial";
+                ctx.fillText(c.symbol, x + 10 + labelWidth, y + 27);
+                ctx.save();
+                ctx.translate(x + CARD_W, y + CARD_H);
+                ctx.rotate(Math.PI);
+                ctx.font = "bold 24px Arial";
+                ctx.fillText(c.label, 8, 28);
+                ctx.font = "20px Arial";
+                ctx.fillText(c.symbol, 10 + labelWidth, 27);
+                ctx.restore();
+                ctx.font = "70px Arial";
+                ctx.textAlign = "center";
+                ctx.fillText(c.symbol, x + CARD_W/2, y + CARD_H/2 + 25);
+            } else {
+                ctx.strokeStyle = "rgba(255,255,255,0.2)"; ctx.strokeRect(x+8, y+8, CARD_W-16, CARD_H-16);
+            }
+            ctx.restore();
+        }
+
+        function draw() {
+            ctx.fillStyle = "#15291c"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.strokeStyle = "rgba(255,255,255,0.1)"; ctx.lineWidth = 2;
+            [STOCK_X, WASTE_X, ...FOUNDATION_X, ...TABLEAU_X].forEach((x, i) => {
+                let y = i < 6 ? TOP_Y : TABLEAU_Y;
+                ctx.beginPath(); ctx.roundRect(x, y, CARD_W, CARD_H, 10); ctx.stroke();
+            });
+            if(stock.length) drawCard({faceUp:false}, STOCK_X, TOP_Y);
+            if(waste.length) drawCard(waste[waste.length-1], WASTE_X, TOP_Y);
+            foundations.forEach((f, i) => { if(f.length) drawCard(f[f.length-1], FOUNDATION_X[i], TOP_Y); });
+            tableau.forEach((col, i) => col.forEach((c, j) => drawCard(c, TABLEAU_X[i], TABLEAU_Y + j * 35)));
+            if(isDragging) draggedCards.forEach((c, i) => drawCard(c, mouse.x - dragOff.x, mouse.y - dragOff.y + i * 35, true));
+        }
+
+        function canMove(card, target, isFoundation = false) {
+            if(isFoundation) {
+                if(!target) return card.rank === 1;
+                return card.suit === target.suit && card.rank === target.rank + 1;
+            }
+            if(!target) return card.rank === 13;
+            return (card.color !== target.color) && card.rank === target.rank - 1;
+        }
+
+        function getMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            return { x: (e.clientX - rect.left) * (canvas.width / rect.width), y: (e.clientY - rect.top) * (canvas.height / rect.height) };
+        }
+
+        canvas.onmousedown = (e) => {
+            mouse = getMousePos(e);
+            if(!audioCtx) playClickSound();
+            if(mouse.x > STOCK_X && mouse.x < STOCK_X+CARD_W && mouse.y < TOP_Y+CARD_H) {
+                saveState();
+                playClickSound();
+                if(!stock.length) { 
+                    stock = waste.reverse().map(c=>{c.faceUp=false; return c;}); 
+                    waste = []; 
+                    updateScore(-20);
+                }
+                else { let c = stock.pop(); c.faceUp = true; waste.push(c); }
+                return draw();
+            }
+            tableau.forEach((col, i) => {
+                col.forEach((c, j) => {
+                    if(c.faceUp && mouse.x > TABLEAU_X[i] && mouse.x < TABLEAU_X[i]+CARD_W && mouse.y > TABLEAU_Y+j*35 && mouse.y < TABLEAU_Y+j*35+CARD_H) {
+                        saveState(); draggedCards = col.splice(j); draggedSource = { type: 'tableau', index: i };
+                        isDragging = true; dragOff = { x: mouse.x - TABLEAU_X[i], y: mouse.y - (TABLEAU_Y+j*35) };
+                    }
+                });
+            });
+            if(waste.length && mouse.x > WASTE_X && mouse.x < WASTE_X+CARD_W && mouse.y > TOP_Y && mouse.y < TOP_Y+CARD_H) {
+                saveState(); draggedCards = [waste.pop()]; draggedSource = { type: 'waste' };
+                isDragging = true; dragOff = { x: mouse.x - WASTE_X, y: mouse.y - TOP_Y };
+            }
+        };
+
+        window.onmousemove = (e) => { if(isDragging) { mouse = getMousePos(e); draw(); }};
+
+        window.onmouseup = () => {
+            if(!isDragging) return;
+            let placed = false;
+            tableau.forEach((col, i) => {
+                const tx = TABLEAU_X[i], ty = TABLEAU_Y + (col.length ? (col.length-1)*35 : 0);
+                if(mouse.x > tx - 30 && mouse.x < tx + CARD_W + 30 && mouse.y > ty - 30 && mouse.y < ty + CARD_H + 60) {
+                    if(canMove(draggedCards[0], col[col.length-1])) { 
+                        tableau[i] = col.concat(draggedCards); 
+                        placed = true; 
+                        if(draggedSource.type === 'waste') updateScore(5);
+                    }
+                }
+            });
+            if(draggedCards.length === 1) {
+                foundations.forEach((f, i) => {
+                    if(mouse.x > FOUNDATION_X[i] && mouse.x < FOUNDATION_X[i]+CARD_W && mouse.y < TOP_Y+CARD_H) {
+                        if(canMove(draggedCards[0], f[f.length-1], true)) { 
+                            f.push(draggedCards[0]); 
+                            placed = true; 
+                            updateScore(10);
+                        }
+                    }
+                });
+            }
+            if(!placed) {
+                if(draggedSource.type === 'tableau') tableau[draggedSource.index] = tableau[draggedSource.index].concat(draggedCards);
+                else waste.push(draggedCards[0]);
+                history.pop();
+            } else {
+                playClickSound();
+                if(draggedSource.type === 'tableau' && tableau[draggedSource.index].length) {
+                    let lastCard = tableau[draggedSource.index][tableau[draggedSource.index].length-1];
+                    if (!lastCard.faceUp) {
+                        lastCard.faceUp = true;
+                        updateScore(5);
+                    }
+                }
+            }
+            isDragging = false; draw();
+        };
+
+        document.getElementById('undoBtn').onclick = undo;
+        initGame();
+    })();
+</script>
+</body>
+</html>
