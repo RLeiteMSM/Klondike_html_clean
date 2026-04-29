@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Klondike Solitaire - Som Corrigido</title>
+    <title>Klondike Solitaire - Deluxe</title>
     <style>
         * { user-select: none; -webkit-tap-highlight-color: transparent; }
         body {
@@ -13,7 +13,6 @@
             font-family: 'Segoe UI', sans-serif; margin: 0; padding: 10px;
         }
         
-        /* Novo estilo para o contador no topo */
         .score-header {
             background: rgba(30, 25, 20, 0.85);
             padding: 10px 40px;
@@ -225,6 +224,8 @@
         canvas.onmousedown = (e) => {
             mouse = getMousePos(e);
             if(!audioCtx) playClickSound();
+            
+            // Lógica do Monte (Stock)
             if(mouse.x > STOCK_X && mouse.x < STOCK_X+CARD_W && mouse.y < TOP_Y+CARD_H) {
                 saveState();
                 playClickSound();
@@ -236,15 +237,32 @@
                 else { let c = stock.pop(); c.faceUp = true; waste.push(c); }
                 return draw();
             }
-            tableau.forEach((col, i) => {
-                col.forEach((c, j) => {
-                    if(c.faceUp && mouse.x > TABLEAU_X[i] && mouse.x < TABLEAU_X[i]+CARD_W && mouse.y > TABLEAU_Y+j*35 && mouse.y < TABLEAU_Y+j*35+CARD_H) {
-                        saveState(); draggedCards = col.splice(j); draggedSource = { type: 'tableau', index: i };
-                        isDragging = true; dragOff = { x: mouse.x - TABLEAU_X[i], y: mouse.y - (TABLEAU_Y+j*35) };
-                    }
-                });
+
+            // Arrastar das Fundações (Novo!)
+            foundations.forEach((f, i) => {
+                if(f.length && mouse.x > FOUNDATION_X[i] && mouse.x < FOUNDATION_X[i]+CARD_W && mouse.y > TOP_Y && mouse.y < TOP_Y+CARD_H) {
+                    saveState();
+                    draggedCards = [f.pop()];
+                    draggedSource = { type: 'foundation', index: i };
+                    isDragging = true;
+                    dragOff = { x: mouse.x - FOUNDATION_X[i], y: mouse.y - TOP_Y };
+                }
             });
-            if(waste.length && mouse.x > WASTE_X && mouse.x < WASTE_X+CARD_W && mouse.y > TOP_Y && mouse.y < TOP_Y+CARD_H) {
+
+            // Arrastar do Tableau
+            if (!isDragging) {
+                tableau.forEach((col, i) => {
+                    col.forEach((c, j) => {
+                        if(c.faceUp && mouse.x > TABLEAU_X[i] && mouse.x < TABLEAU_X[i]+CARD_W && mouse.y > TABLEAU_Y+j*35 && mouse.y < TABLEAU_Y+j*35+CARD_H) {
+                            saveState(); draggedCards = col.splice(j); draggedSource = { type: 'tableau', index: i };
+                            isDragging = true; dragOff = { x: mouse.x - TABLEAU_X[i], y: mouse.y - (TABLEAU_Y+j*35) };
+                        }
+                    });
+                });
+            }
+
+            // Arrastar do Descarte (Waste)
+            if (!isDragging && waste.length && mouse.x > WASTE_X && mouse.x < WASTE_X+CARD_W && mouse.y > TOP_Y && mouse.y < TOP_Y+CARD_H) {
                 saveState(); draggedCards = [waste.pop()]; draggedSource = { type: 'waste' };
                 isDragging = true; dragOff = { x: mouse.x - WASTE_X, y: mouse.y - TOP_Y };
             }
@@ -255,6 +273,8 @@
         window.onmouseup = () => {
             if(!isDragging) return;
             let placed = false;
+
+            // Tentar colocar no Tableau
             tableau.forEach((col, i) => {
                 const tx = TABLEAU_X[i], ty = TABLEAU_Y + (col.length ? (col.length-1)*35 : 0);
                 if(mouse.x > tx - 30 && mouse.x < tx + CARD_W + 30 && mouse.y > ty - 30 && mouse.y < ty + CARD_H + 60) {
@@ -262,26 +282,33 @@
                         tableau[i] = col.concat(draggedCards); 
                         placed = true; 
                         if(draggedSource.type === 'waste') updateScore(5);
+                        if(draggedSource.type === 'foundation') updateScore(-10); // Penalidade por remover da fundação
                     }
                 }
             });
-            if(draggedCards.length === 1) {
+
+            // Tentar colocar na Fundação (Apenas 1 carta por vez)
+            if(!placed && draggedCards.length === 1) {
                 foundations.forEach((f, i) => {
                     if(mouse.x > FOUNDATION_X[i] && mouse.x < FOUNDATION_X[i]+CARD_W && mouse.y < TOP_Y+CARD_H) {
                         if(canMove(draggedCards[0], f[f.length-1], true)) { 
                             f.push(draggedCards[0]); 
                             placed = true; 
-                            updateScore(10);
+                            if (draggedSource.type !== 'foundation') updateScore(10);
                         }
                     }
                 });
             }
+
+            // Retorno em caso de movimento inválido
             if(!placed) {
                 if(draggedSource.type === 'tableau') tableau[draggedSource.index] = tableau[draggedSource.index].concat(draggedCards);
-                else waste.push(draggedCards[0]);
+                else if(draggedSource.type === 'waste') waste.push(draggedCards[0]);
+                else if(draggedSource.type === 'foundation') foundations[draggedSource.index].push(draggedCards[0]);
                 history.pop();
             } else {
                 playClickSound();
+                // Revelar carta no Tableau se necessário
                 if(draggedSource.type === 'tableau' && tableau[draggedSource.index].length) {
                     let lastCard = tableau[draggedSource.index][tableau[draggedSource.index].length-1];
                     if (!lastCard.faceUp) {
