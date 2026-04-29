@@ -8,7 +8,7 @@
         * { 
             user-select: none; 
             -webkit-tap-highlight-color: transparent; 
-            touch-action: none; /* Previne gestos padrão do navegador que conflitam com o jogo */
+            touch-action: none; 
         }
         
         body {
@@ -136,7 +136,7 @@
         function drawCard(c, x, y, ghost = false) {
             ctx.save();
             if(ghost) { ctx.shadowBlur = 15; ctx.globalAlpha = 0.8; }
-            ctx.fillStyle = c.faceUp ? "#ffffff" : "#291522";
+            ctx.fillStyle = c.faceUp ? "#c2c7b4" : "#291522";
             ctx.strokeStyle = "#000";
             ctx.lineWidth = 2;
             ctx.beginPath(); 
@@ -221,12 +221,10 @@
         function handleStart(e) {
             const pos = getInputPos(e); lastMouse = pos;
 
-            // 1. Botão UNDO
             if(pos.x > UNDO_X && pos.x < UNDO_X+UNDO_W && pos.y > TOP_Y && pos.y < TOP_Y+UNDO_H) {
                 undo(); return;
             }
 
-            // 2. Clique no DECK (Ajustado para ser único)
             if(pos.x > GAP_X && pos.x < GAP_X+CARD_W && pos.y > TOP_Y && pos.y < TOP_Y+CARD_H) {
                 saveState(); playClickSound();
                 if(!stock.length) { 
@@ -241,7 +239,19 @@
                 return;
             }
 
-            // 3. Clique no Tableau
+            // AJUSTE: Permite tirar da fundação
+            for(let i=0; i<4; i++) {
+                const fx = CW - (4-i)*(CARD_W + GAP_X);
+                if(foundations[i].length && pos.x > fx && pos.x < fx+CARD_W && pos.y > TOP_Y && pos.y < TOP_Y+CARD_H) {
+                    saveState();
+                    draggedCards = [foundations[i].pop()];
+                    draggedSource = { type: 'foundation', index: i };
+                    isDragging = true;
+                    dragOff = { x: pos.x - fx, y: pos.y - TOP_Y };
+                    return;
+                }
+            }
+
             for (let i = tableau.length - 1; i >= 0; i--) {
                 const col = tableau[i];
                 const x = GAP_X + i * (CARD_W + GAP_X / 2);
@@ -258,7 +268,6 @@
                 }
             }
 
-            // 4. Clique no Waste
             const WASTE_X = GAP_X + CARD_W + GAP_X;
             if(waste.length && pos.x > WASTE_X && pos.x < WASTE_X+CARD_W && pos.y > TOP_Y && pos.y < TOP_Y+CARD_H) {
                 saveState(); draggedCards = [waste.pop()]; draggedSource = { type: 'waste' };
@@ -272,16 +281,19 @@
             if(!isDragging) return;
             let placed = false; const pos = lastMouse;
 
-            tableau.forEach((col, i) => {
+            // AJUSTE: Adicionado "break" para evitar duplicação entre colunas próximas
+            for (let i = 0; i < tableau.length; i++) {
+                const col = tableau[i];
                 const tx = GAP_X + i*(CARD_W+GAP_X/2);
                 if(pos.x > tx - 20 && pos.x < tx + CARD_W + 20 && pos.y > TABLEAU_Y - 50) {
                     const target = col[col.length-1];
                     const card = draggedCards[0];
                     if((!target && card.rank === 13) || (target && target.color !== card.color && target.rank === card.rank + 1)) {
                         tableau[i] = col.concat(draggedCards); placed = true;
+                        break; 
                     }
                 }
-            });
+            }
 
             if(!placed && draggedCards.length === 1) {
                 for(let i=0; i<4; i++) {
@@ -291,6 +303,7 @@
                         const card = draggedCards[0];
                         if((!target && card.rank === 1) || (target && target.suit === card.suit && card.rank === target.rank + 1)) {
                             foundations[i].push(card); placed = true; score += 10;
+                            break;
                         }
                     }
                 }
@@ -298,6 +311,8 @@
 
             if(!placed) {
                 if(draggedSource.type === 'tableau') tableau[draggedSource.index] = tableau[draggedSource.index].concat(draggedCards);
+                // AJUSTE: Garante retorno para a fundação correta
+                else if(draggedSource.type === 'foundation') foundations[draggedSource.index].push(draggedCards[0]);
                 else waste.push(draggedCards[0]);
                 history.pop();
             } else {
@@ -310,29 +325,12 @@
             isDragging = false; draw();
         }
 
-        // --- GESTÃO DE EVENTOS PARA EVITAR CLIQUE DUPLO ---
-        
-        canvas.addEventListener('mousedown', (e) => {
-            handleStart(e);
-        });
-
+        canvas.addEventListener('mousedown', (e) => { handleStart(e); });
         window.addEventListener('mousemove', handleMove);
         window.addEventListener('mouseup', handleEnd);
-
-        canvas.addEventListener('touchstart', (e) => {
-            // Previne o disparo do mousedown após o toque
-            if(e.cancelable) e.preventDefault(); 
-            handleStart(e);
-        }, {passive: false});
-
-        window.addEventListener('touchmove', (e) => {
-            if(isDragging) e.preventDefault(); // Impede scroll durante o arraste
-            handleMove(e);
-        }, {passive: false});
-
-        window.addEventListener('touchend', (e) => {
-            handleEnd();
-        }, {passive: true});
+        canvas.addEventListener('touchstart', (e) => { if(e.cancelable) e.preventDefault(); handleStart(e); }, {passive: false});
+        window.addEventListener('touchmove', (e) => { if(isDragging) e.preventDefault(); handleMove(e); }, {passive: false});
+        window.addEventListener('touchend', (e) => { handleEnd(); }, {passive: true});
 
         initGame();
     })();
